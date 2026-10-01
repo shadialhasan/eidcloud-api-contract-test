@@ -1,0 +1,12 @@
+{
+  "description": "Automated OpenAPI contract fuzzer and boundary testing suite generating mutation test cases in pure PHP",
+  "topics": [
+    "eidcloud",
+    "api-contract-testing",
+    "openapi-fuzzer",
+    "boundary-testing",
+    "api-testing",
+    "qa-automation",
+    "php8"
+  ]
+}

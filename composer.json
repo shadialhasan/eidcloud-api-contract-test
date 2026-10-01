@@ -1,0 +1,30 @@
+{
+  "name": "eidcloud/api-contract-test",
+  "description": "Automated OpenAPI contract fuzzer and boundary testing suite generating mutation test cases in pure PHP",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Eng. MHD. Shadi AL-Hasan",
+      "role": "Author & Maintainer"
+    }
+  ],
+  "require": {
+    "php": ">=8.2.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "EidCloud\\ApiContractTest\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "EidCloud\\ApiContractTest\\Tests\\": "tests/"
+    }
+  },
+  "bin": [
+    "bin/eidcloud-contract"
+  ],
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

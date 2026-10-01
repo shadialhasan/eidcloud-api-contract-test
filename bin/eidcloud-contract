@@ -1,0 +1,236 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Register zero-dependency PSR-4 autoloader for EidCloud\ApiContractTest
+spl_autoload_register(function (string $class) {
+    $prefix = 'EidCloud\\ApiContractTest\\';
+    $baseDir = dirname(__DIR__) . '/src/';
+
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+
+    $relativeClass = substr($class, $len);
+    $file = $baseDir . str_replace('\\', '/', $relativeClass) . '.php';
+
+    if (file_exists($file)) {
+        require_once $file;
+    }
+});
+
+use EidCloud\ApiContractTest\ContractTester;
+use EidCloud\ApiContractTest\Reporter\ContractReport;
+use EidCloud\ApiContractTest\Runner\TestResult;
+
+function printBanner(): void
+{
+    echo "================================================================================" . PHP_EOL;
+    echo "       🎯 EidCloud API Contract & Boundary Fuzzing CLI (v1.0.0)                 " . PHP_EOL;
+    echo "================================================================================" . PHP_EOL;
+}
+
+function printHelp(): void
+{
+    printBanner();
+    echo <<<HELP
+Usage:
+  eidcloud-contract <command> [arguments] [options]
+
+Commands:
+  fuzz <spec-file>       Fuzz API target using OpenAPI specification
+  report                 Render compliance scorecard from existing test results JSON
+  version                Show CLI version
+
+Options:
+  --target=<url>         Base target URL of the API (e.g. http://localhost:8080)
+  --concurrency=<int>    Concurrent HTTP worker threads (default: 5)
+  --output=<path>        Save JSON results to specified file path
+  --in=<path>            Input JSON results file for report command
+  --format=<type>        Output format: table, json, or markdown (default: table)
+  --mock                 Run in simulation mode using built-in contract mock validator
+  --fail-on-breach       Exit with non-zero status code if contract breaches are found
+  -h, --help             Display this help message
+
+Examples:
+  php bin/eidcloud-contract fuzz openapi.json --target=http://localhost:8080
+  php bin/eidcloud-contract fuzz spec.json --mock --output=results.json
+  php bin/eidcloud-contract fuzz spec.json --target=https://api.example.com --concurrency=10 --fail-on-breach
+  php bin/eidcloud-contract report --in=results.json --format=table
+  php bin/eidcloud-contract report --in=results.json --format=markdown
+
+HELP;
+}
+
+// Parse CLI arguments
+$args = array_slice($argv, 1);
+if (empty($args) || in_array('-h', $args, true) || in_array('--help', $args, true)) {
+    printHelp();
+    exit(0);
+}
+
+$command = $args[0];
+$options = [];
+$positional = [];
+
+for ($i = 1; $i < count($args); $i++) {
+    $arg = $args[$i];
+    if (str_starts_with($arg, '--')) {
+        $clean = substr($arg, 2);
+        if (str_contains($clean, '=')) {
+            [$k, $v] = explode('=', $clean, 2);
+            $options[$k] = $v;
+        } else {
+            $options[$clean] = true;
+        }
+    } else {
+        $positional[] = $arg;
+    }
+}
+
+if ($command === 'version' || $command === '--version' || $command === '-v') {
+    echo "eidcloud-api-contract-test v1.0.0 (Pure PHP 8.2+)" . PHP_EOL;
+    exit(0);
+}
+
+if ($command === 'fuzz') {
+    $specFile = $positional[0] ?? null;
+    if (!$specFile) {
+        echo "[ERROR] Missing specification file argument." . PHP_EOL;
+        echo "Usage: php bin/eidcloud-contract fuzz <spec-file> [--target=<url>]" . PHP_EOL;
+        exit(1);
+    }
+
+    if (!file_exists($specFile)) {
+        echo "[ERROR] Specification file not found: {$specFile}" . PHP_EOL;
+        exit(1);
+    }
+
+    $targetUrl = $options['target'] ?? 'http://localhost:8080';
+    $concurrency = isset($options['concurrency']) ? (int) $options['concurrency'] : 5;
+    $mockMode = isset($options['mock']);
+    $outputFile = $options['output'] ?? null;
+    $format = strtolower($options['format'] ?? 'table');
+    $failOnBreach = isset($options['fail-on-breach']);
+
+    printBanner();
+    echo "• Loading OpenAPI Specification: {$specFile}" . PHP_EOL;
+
+    try {
+        $tester = ContractTester::create($targetUrl, $concurrency, $mockMode);
+        $tester->loadSpecFromFile($specFile);
+
+        $testCases = $tester->generateTestCases();
+        echo "• Generated " . count($testCases) . " test cases (Baseline + Boundary + Mutations)" . PHP_EOL;
+        echo "• Target API    : " . ($mockMode ? "[MOCK SIMULATOR ENGINE]" : $targetUrl) . PHP_EOL;
+        echo "• Concurrency   : {$concurrency} concurrent requests" . PHP_EOL;
+        echo "• Executing test suite..." . PHP_EOL . PHP_EOL;
+
+        $report = $tester->run(function (TestResult $res, int $done, int $total) {
+            $symbol = $res->isPassed() ? "✓" : "✗";
+            $tc = $res->getTestCase();
+            printf("  [%3d/%-3d] %s %-6s %-30s -> HTTP %d (%s)\n",
+                $done,
+                $total,
+                $symbol,
+                $tc->getMethod(),
+                substr($tc->getPath(), 0, 30),
+                $res->getHttpResult()->getStatusCode(),
+                $res->getTestCase()->getMutationType()->name
+            );
+        });
+
+        echo PHP_EOL;
+
+        if ($outputFile) {
+            $report->saveToFile($outputFile);
+            echo "• Saved test results to: {$outputFile}" . PHP_EOL . PHP_EOL;
+        }
+
+        if ($format === 'json') {
+            echo $report->toJson(true) . PHP_EOL;
+        } elseif ($format === 'markdown' || $format === 'md') {
+            echo $report->renderMarkdown();
+        } else {
+            echo $report->renderCliTable();
+        }
+
+        if ($failOnBreach && $report->getBreachTests() > 0) {
+            echo PHP_EOL . "[EXIT] Contract breaches detected with --fail-on-breach active." . PHP_EOL;
+            exit(2);
+        }
+
+        exit(0);
+    } catch (\Throwable $e) {
+        echo "[ERROR] Execution failed: " . $e->getMessage() . PHP_EOL;
+        exit(1);
+    }
+}
+
+if ($command === 'report') {
+    $inputFile = $options['in'] ?? ($positional[0] ?? null);
+    if (!$inputFile || !file_exists($inputFile)) {
+        echo "[ERROR] Input results file not found or unspecified. Use --in=<path>" . PHP_EOL;
+        exit(1);
+    }
+
+    $raw = file_get_contents($inputFile);
+    $data = json_decode((string) $raw, true);
+
+    if (!is_array($data) || !isset($data['results'])) {
+        echo "[ERROR] Invalid results JSON format in {$inputFile}" . PHP_EOL;
+        exit(1);
+    }
+
+    $format = strtolower($options['format'] ?? 'table');
+
+    // Reconstruct results
+    $results = [];
+    foreach ($data['results'] as $item) {
+        $tc = new \EidCloud\ApiContractTest\Fuzzer\TestCase(
+            operationId: $item['operationId'] ?? 'op',
+            method: $item['method'] ?? 'GET',
+            path: $item['path'] ?? '/',
+            queryParams: [],
+            headers: [],
+            body: null,
+            description: $item['description'] ?? '',
+            mutationType: \EidCloud\ApiContractTest\Fuzzer\MutationType::tryFrom($item['mutationType'] ?? '') ?? \EidCloud\ApiContractTest\Fuzzer\MutationType::BASELINE_VALID,
+            expectedStatusCategory: $item['expectedStatus'] ?? '4xx'
+        );
+
+        $http = new \EidCloud\ApiContractTest\Runner\HttpExecutionResult(
+            url: $item['path'] ?? '/',
+            statusCode: (int) ($item['actualStatus'] ?? 0),
+            headers: [],
+            body: '',
+            latencyMs: (float) ($item['latencyMs'] ?? 0.0),
+            error: null
+        );
+
+        $results[] = new TestResult($tc, $http);
+    }
+
+    $summary = $data['summary'] ?? [];
+    $report = new ContractReport(
+        results: $results,
+        durationSeconds: (float) ($summary['durationSeconds'] ?? 0.0),
+        targetUrl: (string) ($summary['targetUrl'] ?? ''),
+        specTitle: (string) ($summary['specTitle'] ?? '')
+    );
+
+    if ($format === 'json') {
+        echo $report->toJson(true) . PHP_EOL;
+    } elseif ($format === 'markdown' || $format === 'md') {
+        echo $report->renderMarkdown();
+    } else {
+        echo $report->renderCliTable();
+    }
+
+    exit(0);
+}
+
+echo "[ERROR] Unknown command '{$command}'. Run with --help for usage." . PHP_EOL;
+exit(1);
